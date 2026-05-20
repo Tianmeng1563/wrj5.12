@@ -54,7 +54,7 @@ for key, val in default_states.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-# --------------------------新增通信拓扑文本内容（纯功能模块，无图片）--------------------------
+# --------------------------通信拓扑模块--------------------------
 st.header("通信链路拓扑与数据流")
 # 设备在线状态
 col_gcs, col_obc, col_fcu = st.columns(3)
@@ -319,7 +319,9 @@ else:
                 st.session_state.flight_running = False
                 st.success("🎉 飞行任务完成")
 
+        # 修复：强制限制进度值 0~1，不会再报错
         progress = st.session_state.current_wp_idx / (len(st.session_state.flight_waypoints)-1)
+        progress = min(progress, 1.0)
         st.progress(progress, text=f"任务进度：{round(progress*100,1)}%")
 
         col_map_flight, col_status = st.columns([2,1])
