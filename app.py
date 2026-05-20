@@ -319,7 +319,7 @@ else:
                 st.session_state.flight_running = False
                 st.success("🎉 飞行任务完成")
 
-        # 修复：强制限制进度值 0~1，不会再报错
+        # 修复进度越界
         progress = st.session_state.current_wp_idx / (len(st.session_state.flight_waypoints)-1)
         progress = min(progress, 1.0)
         st.progress(progress, text=f"任务进度：{round(progress*100,1)}%")
@@ -333,16 +333,20 @@ else:
                 tiles="https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
                 attr="高德卫星地图"
             )
+            # 绘制障碍物
             for idx,obs in enumerate(st.session_state.polygon_memory):
                 pts=obs["pts"]
                 hh=obs["h"]
                 if len(pts)>=3:
                     folium.Polygon(locations=pts,color="#dc2626",fill=True,fill_color="#dc2626",fill_opacity=0.45).add_to(m_flight)
-            folium.PolyLine(st.session_state.flight_waypoints, color="#0066ff", weight=3, opacity=0.5).add_to(m_flight)
+            # 完整航线（蓝色未飞行）
+            folium.PolyLine(st.session_state.flight_waypoints, color="#0066ff", weight=3, opacity=0.4).add_to(m_flight)
+            # 已飞行航线（绿色动态延伸）
             flown_idx = int(st.session_state.current_wp_idx)
             flown_waypoints = st.session_state.flight_waypoints[:flown_idx+1]
             if len(flown_waypoints)>=2:
-                folium.PolyLine(flown_waypoints, color="#22bb22", weight=4).add_to(m_flight)
+                folium.PolyLine(flown_waypoints, color="#22bb22", weight=5, opacity=0.9).add_to(m_flight)
+            # 无人机当前位置
             drone_pos = st.session_state.flight_waypoints[min(int(st.session_state.current_wp_idx), len(st.session_state.flight_waypoints)-1)]
             folium.CircleMarker(drone_pos, radius=10, color="orange", fill=True, fill_color="orange").add_to(m_flight)
             st_folium(m_flight, width="100%", height=500, key="flight_map")
