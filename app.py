@@ -19,20 +19,21 @@ def load_all_data():
     if os.path.exists(SAVE_FILE):
         with open(SAVE_FILE,"r",encoding="utf-8") as f:
             return json.load(f)
-    # ===================== 南科院校内精准坐标 都在校园里面 =====================
     return {
-        "A": [32.2346, 118.7492],   # 校内操场
-        "B": [32.2335, 118.7505],   # 校内实训楼
+        "A": [32.2346, 118.7492],
+        "B": [32.2335, 118.7505],
         "A_set": True,
         "B_set": True,
-        "obstacles": []
+        "obstacles": [],
+        "waypoints": []
     }
 
 def save_all_data():
     data={
         "A":list(st.session_state.A),"B":list(st.session_state.B),
         "A_set":st.session_state.A_set,"B_set":st.session_state.B_set,
-        "obstacles":st.session_state.polygon_memory
+        "obstacles":st.session_state.polygon_memory,
+        "waypoints":st.session_state.waypoints
     }
     with open(SAVE_FILE,"w",encoding="utf-8") as f:
         json.dump(data,f,ensure_ascii=False,indent=2)
@@ -47,7 +48,9 @@ default_states = {
     "flight_running": False, "flight_paused": False, "current_wp_idx": 0,
     "flight_speed": 8.5, "flight_start_time": None, "flight_waypoints": [],
     "battery": 100.0, "total_distance": 0.0, "elapsed_distance": 0.0,
-    "route_side": "auto"
+    "route_side": "auto",
+    "waypoints": data.get("waypoints", []),
+    "click_set_waypoint": False
 }
 
 for key, val in default_states.items():
@@ -56,7 +59,6 @@ for key, val in default_states.items():
 
 # --------------------------通信拓扑模块--------------------------
 st.header("通信链路拓扑与数据流")
-# 设备在线状态
 col_gcs, col_obc, col_fcu = st.columns(3)
 with col_gcs:
     st.checkbox("GCS在线", value=True, disabled=True)
@@ -65,7 +67,6 @@ with col_obc:
 with col_fcu:
     st.checkbox("FCU在线", value=True, disabled=True)
 
-# 链路连接信息文本展示
 st.subheader("链路连接信息")
 link_col1, link_col2, link_col3 = st.columns(3)
 with link_col1:
@@ -80,10 +81,8 @@ with link_col3:
     st.text("通信协议：MAVLink")
     st.text("固件：PX4 / ArduPilot")
 
-# 链路统计信息
 st.info("链路统计：GCS↔OBC：通信正常 | OBC↔FCU：通信正常 | 链路延迟：~25ms | 丢包率：0.1%")
 
-# 通信日志标签页
 st.subheader("通信日志")
 tab_business, tab_gof, tab_fog = st.tabs(["业务流程", "GCS→OBC→FCU", "FCU→OBC→GCS"])
 with tab_business:
@@ -187,6 +186,20 @@ if page=="航线规划":
             st.session_state.B_set=True
             save_all_data()
             st.success("B点已保存")
+
+        st.divider()
+        st.subheader("📍 自定义多点航线")
+        if st.button("开启地图点击设航点", type="primary"):
+            st.session_state.click_set_waypoint = True
+            st.success("开启成功，点击地图添加航点")
+        if st.button("关闭设航点"):
+            st.session_state.click_set_waypoint = False
+        if st.button("清空所有航点"):
+            st.session_state.waypoints = []
+            save_all_data()
+            st.rerun()
+        st.info(f"已设置航点数：{len(st.session_state.waypoints)}")
+
         st.divider()
         st.subheader("🚧 障碍物圈选")
         st.session_state.obs_h=st.number_input("障碍物高度(m)",0,300,value=st.session_state.obs_h)
@@ -226,7 +239,6 @@ if page=="航线规划":
     with col_map:
         center_lat=(st.session_state.A[0]+st.session_state.B[0])/2
         center_lon=(st.session_state.A[1]+st.session_state.B[1])/2
-        # 高德卫星地图
         m=folium.Map(
             location=[center_lat,center_lon],
             zoom_start=19,
@@ -236,15 +248,20 @@ if page=="航线规划":
         )
         folium.plugins.Fullscreen(position="topright").add_to(m)
 
-        # 直接用原始校内坐标，不做偏移
         A_raw = st.session_state.A
         B_raw = st.session_state.B
-
         if st.session_state.A_set:
             folium.Marker(A_raw, icon=folium.Icon(color='red', icon='plane', prefix='fa'), popup="起点A").add_to(m)
         if st.session_state.B_set:
             folium.Marker(B_raw, icon=folium.Icon(color='green', icon='plane', prefix='fa'), popup="终点B").add_to(m)
 
+        # 绘制自定义航点
+        for idx, wp in enumerate(st.session_state.waypoints):
+            folium.Marker(wp, icon=folium.Icon(color="blue"), popup=f"航点{idx+1}").add_to(m)
+        if len(st.session_state.waypoints)>=2:
+            folium.PolyLine(st.session_state.waypoints, color="blue", weight=3).add_to(m)
+
+        # 绘制障碍物
         for idx,obs in enumerate(st.session_state.polygon_memory):
             pts=obs["pts"]
             hh=obs["h"]
@@ -256,21 +273,37 @@ if page=="航线规划":
         if len(st.session_state.temp_points)>0:
             folium.PolyLine(st.session_state.temp_points,color="#ff7700",weight=3,dash_array="10 5").add_to(m)
 
-        if st.session_state.A_set and st.session_state.B_set:
+        # 生成最终避障航线
+        if len(st.session_state.waypoints)>=2:
+            full_route = []
+            for i in range(len(st.session_state.waypoints)-1):
+                seg, _ = get_safe_route(st.session_state.waypoints[i], st.session_state.waypoints[i+1], st.session_state.polygon_memory, st.session_state.safe_radius, st.session_state.route_side)
+                full_route.extend(seg[:-1])
+            full_route.append(st.session_state.waypoints[-1])
+            st.session_state.flight_waypoints = full_route
+            folium.PolyLine(full_route,color="#0066ff",weight=5,popup="避障航线").add_to(m)
+        elif st.session_state.A_set and st.session_state.B_set:
             safe_waypoints, need_avoid = get_safe_route(A_raw, B_raw, st.session_state.polygon_memory, st.session_state.safe_radius, st.session_state.route_side)
             st.session_state.flight_waypoints = safe_waypoints
             folium.PolyLine(safe_waypoints,color="#0066ff",weight=5,popup="校内避障航线").add_to(m)
 
         output=st_folium(m,width=1150,height=720,key="main_map")
-        if st.session_state.is_drawing and output and output.get("last_clicked"):
-            now = time.time()
-            if now - st.session_state.last_click_time > 0.5:
-                pt = output["last_clicked"]
-                new_pt = [pt["lat"], pt["lng"]]
-                if not st.session_state.temp_points or new_pt != st.session_state.temp_points[-1]:
-                    st.session_state.temp_points.append(new_pt)
-                    st.session_state.last_click_time = now
-                    st.rerun()
+        if output and output.get("last_clicked"):
+            pt = output["last_clicked"]
+            new_pt = [pt["lat"], pt["lng"]]
+            # 绘制障碍物
+            if st.session_state.is_drawing:
+                now = time.time()
+                if now - st.session_state.last_click_time > 0.5:
+                    if not st.session_state.temp_points or new_pt != st.session_state.temp_points[-1]:
+                        st.session_state.temp_points.append(new_pt)
+                        st.session_state.last_click_time = now
+                        st.rerun()
+            # 设置航点
+            elif st.session_state.click_set_waypoint:
+                st.session_state.waypoints.append(new_pt)
+                save_all_data()
+                st.rerun()
 
 # 飞行监控页面
 else:
@@ -301,7 +334,7 @@ else:
             st.rerun()
 
     if len(st.session_state.flight_waypoints) < 2:
-        st.warning("⚠️ 先在航线规划页面生成校内航线！")
+        st.warning("⚠️ 先在航线规划页面生成航线！")
     else:
         total_dist = 0
         for i in range(len(st.session_state.flight_waypoints)-1):
@@ -319,7 +352,6 @@ else:
                 st.session_state.flight_running = False
                 st.success("🎉 飞行任务完成")
 
-        # 修复进度越界
         progress = st.session_state.current_wp_idx / (len(st.session_state.flight_waypoints)-1)
         progress = min(progress, 1.0)
         st.progress(progress, text=f"任务进度：{round(progress*100,1)}%")
@@ -333,20 +365,16 @@ else:
                 tiles="https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
                 attr="高德卫星地图"
             )
-            # 绘制障碍物
             for idx,obs in enumerate(st.session_state.polygon_memory):
                 pts=obs["pts"]
                 hh=obs["h"]
                 if len(pts)>=3:
                     folium.Polygon(locations=pts,color="#dc2626",fill=True,fill_color="#dc2626",fill_opacity=0.45).add_to(m_flight)
-            # 完整航线（蓝色未飞行）
             folium.PolyLine(st.session_state.flight_waypoints, color="#0066ff", weight=3, opacity=0.4).add_to(m_flight)
-            # 已飞行航线（绿色动态延伸）
             flown_idx = int(st.session_state.current_wp_idx)
             flown_waypoints = st.session_state.flight_waypoints[:flown_idx+1]
             if len(flown_waypoints)>=2:
                 folium.PolyLine(flown_waypoints, color="#22bb22", weight=5, opacity=0.9).add_to(m_flight)
-            # 无人机当前位置
             drone_pos = st.session_state.flight_waypoints[min(int(st.session_state.current_wp_idx), len(st.session_state.flight_waypoints)-1)]
             folium.CircleMarker(drone_pos, radius=10, color="orange", fill=True, fill_color="orange").add_to(m_flight)
             st_folium(m_flight, width="100%", height=500, key="flight_map")
